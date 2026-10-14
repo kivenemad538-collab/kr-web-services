@@ -1,16 +1,16 @@
-const express = require('express');
-const path = require('path');
-const app = express();
-app.use(express.json());
-app.use(express.static(__dirname));
-const prices = { personal:60, portfolio:75, business:120, gaming:100, discord:90, fivem:150, fivemAdvanced:220, custom:150 };
-app.get('/api/prices', (req,res) => res.json(prices));
-app.post('/api/orders', (req,res) => {
- const b=req.body;
- if(!b.name || !b.whatsapp || !prices[b.type]) return res.status(400).json({error:'Missing required information'});
- const id='KR-'+Math.floor(100000+Math.random()*900000);
- res.json({id:id,status:'New',price:prices[b.type],monthly:b.customDomain?10:0});
-});
-app.get('/',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
-const port=process.env.PORT || 3000;
-app.listen(port,'0.0.0.0',()=>console.log('KR running on port '+port));
+const express=require('express');
+const path=require('path');
+const {Pool}=require('pg');
+const app=express();
+app.use(express.json());app.use(express.static(__dirname));
+const db=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false}}):null;
+const prices={personal:60,portfolio:75,business:120,gaming:100,discord:90,fivem:150,fivemAdvanced:220,custom:150};
+async function init(){if(db)await db.query(`CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,name TEXT,whatsapp TEXT,discord TEXT,project TEXT,type TEXT,details TEXT,price NUMERIC,monthly NUMERIC DEFAULT 0,extras NUMERIC DEFAULT 0,discount NUMERIC DEFAULT 0,paid NUMERIC DEFAULT 0,status TEXT DEFAULT 'New',note TEXT DEFAULT '',created_at TIMESTAMPTZ DEFAULT NOW())`)}
+const total=o=>Number(o.price)+Number(o.extras||0)-Number(o.discount||0);
+app.get('/api/prices',(q,s)=>s.json(prices));
+app.post('/api/orders',async(q,s)=>{try{const b=q.body;if(!b.name||!b.whatsapp||!prices[b.type])return s.status(400).json({error:'Complete required fields'});const o={id:'KR-'+Math.floor(100000+Math.random()*900000),name:b.name.trim(),whatsapp:b.whatsapp.trim(),discord:(b.discord||'').trim(),project:(b.project||'').trim(),type:b.type,details:(b.details||'').trim(),price:prices[b.type],monthly:b.customDomain?10:0};if(db)await db.query('INSERT INTO orders(id,name,whatsapp,discord,project,type,details,price,monthly) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[o.id,o.name,o.whatsapp,o.discord,o.project,o.type,o.details,o.price,o.monthly]);s.json({...o,status:'New'})}catch(e){console.error(e);s.status(500).json({error:'Order could not be created'})}});
+app.get('/api/track/:id',async(q,s)=>{if(!db)return s.status(503).json({error:'Database not connected'});const r=await db.query('SELECT id,project,type,price,monthly,extras,discount,paid,status,created_at FROM orders WHERE id=$1',[q.params.id.toUpperCase()]);if(!r.rows[0])return s.status(404).json({error:'Order not found'});const o=r.rows[0];s.json({...o,total:total(o),remaining:Math.max(0,total(o)-Number(o.paid))})});
+function admin(q,s,n){if(!process.env.ADMIN_KEY||q.headers['x-admin-key']!==process.env.ADMIN_KEY)return s.status(401).json({error:'Unauthorized'});n()}
+app.get('/api/admin/orders',admin,async(q,s)=>{if(!db)return s.json([]);const r=await db.query('SELECT * FROM orders ORDER BY created_at DESC');s.json(r.rows.map(o=>({...o,total:total(o),remaining:Math.max(0,total(o)-Number(o.paid))}))) });
+app.patch('/api/admin/orders/:id',admin,async(q,s)=>{if(!db)return s.status(503).json({error:'Database not connected'});const keys=['status','extras','discount','paid','note'];let set=[],v=[];for(const k of keys)if(q.body[k]!==undefined){v.push(q.body[k]);set.push(k+'=$'+v.length)}if(!set.length)return s.status(400).json({error:'Nothing to update'});v.push(q.params.id.toUpperCase());await db.query('UPDATE orders SET '+set.join(',')+' WHERE id=$'+v.length,v);s.json({ok:true})});
+app.get('/',(q,s)=>s.sendFile(path.join(__dirname,'index.html')));const port=process.env.PORT||3000;init().then(()=>app.listen(port,'0.0.0.0',()=>console.log('KR online'))).catch(console.error);
